@@ -27,6 +27,9 @@ function New-CIPPIntuneTemplate {
             '*groupPolicyConfigurations' {
                 $URLName = 'groupPolicyConfigurations'
             }
+            '*hardwareConfiguration' {
+                $URLName = 'hardwareConfigurations'
+            }
         }
     }
     switch ($URLName) {
@@ -47,6 +50,11 @@ function New-CIPPIntuneTemplate {
                 default { 'managedAppPolicies' }
             }
             $Template = New-GraphGetRequest -uri "https://graph.microsoft.com/beta/deviceAppManagement/$($AppProtectionUrl)('$($ID)')" -tenantid $TenantFilter
+            if ($ODataType -and !$Template.'@odata.type') {
+                # Graph omits @odata.type when an entity is fetched via its concrete type URL, but Set-CIPPIntunePolicy derives the deploy URL from it
+                if ($ODataType -notmatch '^#') { $ODataType = "#$ODataType" }
+                $null = $Template | Add-Member -MemberType NoteProperty -Name '@odata.type' -Value $ODataType -Force
+            }
             $DisplayName = $Template.displayName
             $TemplateJson = ConvertTo-Json -InputObject $Template -Depth 100 -Compress
         }
@@ -131,6 +139,12 @@ function New-CIPPIntuneTemplate {
         }
         'windowsQualityUpdateProfiles' {
             $Type = 'windowsQualityUpdateProfiles'
+            $Template = New-GraphGetRequest -uri "https://graph.microsoft.com/beta/deviceManagement/$($urlname)/$($ID)" -tenantid $TenantFilter | Select-Object * -ExcludeProperty id, lastModifiedDateTime, '@odata.context', 'ScopeTagIds', 'supportsScopeTags', 'createdDateTime'
+            $DisplayName = $Template.displayName
+            $TemplateJson = ConvertTo-Json -InputObject $Template -Depth 100 -Compress
+        }
+        'hardwareConfigurations' {
+            $Type = 'hardwareConfigurations'
             $Template = New-GraphGetRequest -uri "https://graph.microsoft.com/beta/deviceManagement/$($urlname)/$($ID)" -tenantid $TenantFilter | Select-Object * -ExcludeProperty id, lastModifiedDateTime, '@odata.context', 'ScopeTagIds', 'supportsScopeTags', 'createdDateTime'
             $DisplayName = $Template.displayName
             $TemplateJson = ConvertTo-Json -InputObject $Template -Depth 100 -Compress

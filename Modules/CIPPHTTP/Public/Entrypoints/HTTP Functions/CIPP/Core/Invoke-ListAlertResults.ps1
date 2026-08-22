@@ -29,7 +29,11 @@ function Invoke-ListAlertResults {
         $Table = Get-CIPPTable -tablename 'AlertLastRun'
         # AlertLastRun: PartitionKey = run date (yyyyMMdd), RowKey = "{tenant}-{cmdlet}"
         $SafeTenant = ConvertTo-CIPPODataFilterValue -Value $TenantFilter -Type String
-        $Rows = Get-CIPPAzDataTableEntity @Table -Filter "Tenant eq '$SafeTenant'"
+        # AnyTenant skips the framework's per-tenant check, so a tenant-restricted caller could
+        # otherwise read any tenant's fired-alert items by naming it. Narrowing on the row's own
+        # Tenant column keeps allowed tenants' rows and drops everything else, estate-wide rows
+        # included, for restricted callers; unrestricted callers pass through untouched.
+        $Rows = Get-CIPPAzDataTableEntity @Table -Filter "Tenant eq '$SafeTenant'" | Select-CippAllowedTenantData -TenantProperty 'Tenant'
 
         # Keep only the most recent run (highest date partition) per alert. RowKey is
         # "{tenant}-{cmdlet}", uniquely identifying the alert for this tenant. Write-AlertTrace
@@ -42,9 +46,11 @@ function Invoke-ListAlertResults {
                 $LatestByAlert[$Key] = $Row
             }
         }
+        $StaleCutoff = [datetime]::UtcNow.AddDays(-7).ToString('yyyyMMdd')
 
         $Results = [System.Collections.Generic.List[object]]::new()
         foreach ($Row in $LatestByAlert.Values) {
+            if ([string]$Row.PartitionKey -lt $StaleCutoff) { continue }
             if ([string]::IsNullOrWhiteSpace($Row.LogData)) { continue }
             try {
                 $Items = $Row.LogData | ConvertFrom-Json -ErrorAction Stop

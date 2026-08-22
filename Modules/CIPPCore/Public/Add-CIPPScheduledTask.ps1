@@ -188,8 +188,15 @@ function Add-CIPPScheduledTask {
                     $task.ScheduledTime = [int64](([datetime]::UtcNow) - (Get-Date '1/1/1970')).TotalSeconds
                 }
             }
-            $excludedTenants = if ($task.excludedTenants.value) {
-                $task.excludedTenants.value -join ','
+            # Split exclusions by type (same pattern as Tenant/TenantGroup): plain tenants are
+            # comma-joined, groups are stored as JSON and expanded at runtime by the orchestrator
+            $ExcludedEntries = @($task.excludedTenants | Where-Object { $_.value })
+            $excludedTenants = @($ExcludedEntries | Where-Object { $_.type -ne 'Group' }).value -join ','
+            $ExcludedGroupEntries = @($ExcludedEntries | Where-Object { $_.type -eq 'Group' } | ForEach-Object {
+                    [PSCustomObject]@{ value = $_.value; label = $_.label; type = 'Group' }
+                })
+            $excludedTenantGroups = if ($ExcludedGroupEntries.Count -gt 0) {
+                ConvertTo-Json -InputObject $ExcludedGroupEntries -Compress -Depth 5
             }
 
             # Handle tenant filter - support both single tenant and tenant groups
@@ -222,6 +229,7 @@ function Add-CIPPScheduledTask {
                 RowKey               = [string]$RowKey
                 Tenant               = [string]$tenantFilter
                 excludedTenants      = [string]$excludedTenants
+                excludedTenantGroups = [string]$excludedTenantGroups
                 Name                 = [string]$task.Name
                 Command              = [string]$RequestedCommand
                 Parameters           = [string]$Parameters
@@ -240,6 +248,14 @@ function Add-CIPPScheduledTask {
 
             if ($task.Tag) {
                 $entity['Tag'] = [string]$task.Tag
+            }
+
+            if ($Task.RowKey) {
+                # Editing replaces the entity, so carry the disabled state over to keep a disabled task disabled
+                $ExistingEntity = Get-CIPPAzDataTableEntity @Table -Filter "PartitionKey eq 'ScheduledTask' and RowKey eq '$RowKey'" -Property RowKey, Disabled
+                if ($ExistingEntity.Disabled -eq $true) {
+                    $entity['Disabled'] = $true
+                }
             }
 
             # Always store DesiredStartTime if provided
@@ -266,31 +282,14 @@ function Add-CIPPScheduledTask {
                 $entity.Trigger = [string]($task.Trigger | ConvertTo-Json -Compress)
                 $TriggerType = $task.Trigger.Type.value ?? $task.Trigger.Type
                 if ($TriggerType -eq 'DeltaQuery') {
-                    $Parameters = @{}
-                    if ($task.Trigger.WatchedAttributes -and ($task.Trigger.WatchedAttributes | Measure-Object).Count -gt 0) {
-                        $Parameters.'$select' = $task.Trigger.WatchedAttributes | ForEach-Object { $_.value ?? $_ } -join ','
-                    }
-                    if ($task.Trigger.ResourceFilter) {
-                        $ResourceFilterValues = $task.Trigger.ResourceFilter | ForEach-Object { $_.value ?? $_ }
-                        $Parameters.'$filter' = "id eq '" + ($ResourceFilterValues -join "' or id eq '") + "'"
-                    }
                     $Resource = $task.Trigger.DeltaResource.value ?? $task.Trigger.DeltaResource
-
-                    if ($entity.TenantGroup) {
-                        $tenantFilter = $entity.TenantGroup | ConvertFrom-Json
-                    }
-                    $DeltaQuery = @{
-                        TenantFilter = $tenantFilter
-                        Resource     = $Resource
-                        Parameters   = $Parameters
-                        PartitionKey = $RowKey
-                    }
+                    $DeltaTenantFilter = if ($entity.TenantGroup) { $entity.TenantGroup | ConvertFrom-Json } else { $tenantFilter }
 
                     try {
-                        $null = New-GraphDeltaQuery @DeltaQuery
+                        $null = New-CIPPTaskDeltaQuery -Trigger $task.Trigger -TenantFilter $DeltaTenantFilter -PartitionKey $RowKey
                         Write-Information "Created delta query for resource $($Resource)"
                     } catch {
-                        Write-Warning "Failed to create delta query for resource $($Resource): $($_.Exception.Message)"
+                        throw "Failed to create delta query for resource $($Resource): $($_.Exception.Message)"
                     }
                 }
             }
