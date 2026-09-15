@@ -18,6 +18,12 @@ function Get-GraphToken {
     if (!$scope) { $scope = 'https://graph.microsoft.com/.default' }
     if (!$tenantid) { $tenantid = $env:TenantID }
 
+    # Certificate-exclusive auth: force the SAM certificate for CIPP's own SAM app tokens (app-only and
+    # delegated). Scoped to the SAM app - explicit $AppID/$AppSecret callers use their own credentials.
+    if ($env:CertificateAuthMode -and -not $AppID -and -not $AppSecret) {
+        $UseCertificate = $true
+    }
+
     $UseSharedTokenCache = ($SkipCache -ne $true) -and ($null -ne ('CIPP.CIPPTokenCache' -as [type]))
 
     # ── Fast path: check shared .NET token cache before any table lookups ──
@@ -67,8 +73,15 @@ function Get-GraphToken {
         $AppCache = Get-CIPPAzDataTableEntity @ConfigTable -Filter $Filter
         #force auth update is appId is not the same as the one in the environment variable.
         if ($AppCache.ApplicationId -and $env:ApplicationID -ne $AppCache.ApplicationId) {
-            Write-Host "Setting environment variable ApplicationID to $($AppCache.ApplicationId)"
-            $CIPPAuth = Get-CIPPAuthentication
+            $CIPPAuth = Get-CIPPAuthentication          # reload creds from KV (source of truth)
+            if ($env:ApplicationID -and $env:ApplicationID -ne $AppCache.ApplicationId) {
+                # KV and AppCache genuinely diverged — reconcile the marker to KV so we
+                # don't reload on every subsequent token call.
+                Write-Host "AppCache ApplicationId ($($AppCache.ApplicationId)) differs from KV ($env:ApplicationID); reconciling AppCache."
+                $null = Add-CIPPAzDataTableEntity @ConfigTable -Entity @{
+                    PartitionKey = 'AppCache'; RowKey = 'AppCache'; ApplicationId = "$env:ApplicationID"
+                } -Force
+            }
         }
         $refreshToken = $env:RefreshToken
         #Get list of tenants that have 'directTenant' set to true
@@ -196,7 +209,6 @@ function Get-GraphToken {
             if (!$Tenant.RowKey) {
                 $donotset = $true
                 $Tenant = [pscustomobject]@{
-                    GraphErrorCount     = 0
                     LastGraphTokenError = ''
                     LastGraphError      = ''
                     PartitionKey        = 'TenantFailed'
@@ -213,7 +225,6 @@ function Get-GraphToken {
             } else {
                 $_.Exception.Message
             }
-            $Tenant.GraphErrorCount++
 
             if (!$donotset) { Update-AzDataTableEntity -Force @TenantsTable -Entity $Tenant }
             throw "Could not get token: $($Tenant.LastGraphError)"

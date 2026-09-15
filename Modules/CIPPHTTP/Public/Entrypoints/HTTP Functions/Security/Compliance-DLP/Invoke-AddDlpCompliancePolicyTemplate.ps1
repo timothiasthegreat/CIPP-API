@@ -49,6 +49,9 @@ Function Invoke-AddDlpCompliancePolicyTemplate {
             $RuleParams = foreach ($Rule in $AssociatedRules) {
                 $RuleClean = Format-CIPPCompliancePolicyParams -Source $Rule -AllowedFields $RuleAllowedFields
                 $RuleClean.Remove('Policy') | Out-Null  # added at deploy time, not stored
+                # Advanced-mode rules keep only the AdvancedRule JSON blob, simple-mode rules only the
+                # flat condition params - the cmdlets reject a mix (see Resolve-CIPPDlpAdvancedRule).
+                $RuleClean = Resolve-CIPPDlpAdvancedRule -Source $Rule -RuleParams $RuleClean
                 foreach ($SitField in @('ContentContainsSensitiveInformation', 'ExceptIfContentContainsSensitiveInformation')) {
                     if ($RuleClean.ContainsKey($SitField)) {
                         $RuleClean[$SitField] = @(ConvertTo-CIPPSensitiveInformationType -SensitiveInformation $RuleClean[$SitField])
@@ -84,12 +87,12 @@ Function Invoke-AddDlpCompliancePolicyTemplate {
             PartitionKey = 'DlpCompliancePolicyTemplate'
         }
         $Result = "Successfully created DLP Compliance Policy Template: $($Ordered['name']) with GUID $GUID"
-        Write-LogMessage -headers $Headers -API $APIName -message $Result -Sev 'Debug'
+        Write-LogMessage -headers $Headers -API $APIName -tenant 'Global' -message $Result -Sev 'Info'
         $StatusCode = [HttpStatusCode]::OK
     } catch {
         $ErrorMessage = Get-CippException -Exception $_
         $Result = "Failed to create DLP Compliance Policy Template: $($ErrorMessage.NormalizedError)"
-        Write-LogMessage -headers $Headers -API $APIName -message $Result -Sev 'Error' -LogData $ErrorMessage
+        Write-LogMessage -headers $Headers -API $APIName -tenant 'Global' -message $Result -Sev 'Error' -LogData $ErrorMessage
         $StatusCode = [HttpStatusCode]::InternalServerError
     }
 
