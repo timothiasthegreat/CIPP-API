@@ -17,18 +17,23 @@ function Invoke-CippTestZTNA21835 {
             return
         }
 
-        # Get permanent Global Administrator members
+        # Get permanent Global Administrator members.
+        # This previously filtered on AssignmentType -eq 'Permanent', a value Get-CippDbRoleMembers
+        # never emits (it returns Active/Eligible/Direct), so the set was always empty and the test
+        # silently reported no permanent GAs on every tenant. Permanence is IsPermanent.
         $PermanentGAMembers = Get-CippDbRoleMembers -TenantFilter $Tenant -RoleTemplateId '62e90394-69f5-4237-9190-012177145e10' | Where-Object {
-            $_.AssignmentType -eq 'Permanent' -and $_.'@odata.type' -eq '#microsoft.graph.user'
+            $_.IsPermanent -and $_.'@odata.type' -eq '#microsoft.graph.user'
         }
 
         # Get Users data to check sync status
         $Users = Get-CIPPTestData -TenantFilter $Tenant -Type 'Users'
+        $UserById = [CIPP.CippIndex]::Build($Users, @(foreach ($U in $Users) { , ($($U.id) ?? $null) }))
 
         $EmergencyAccountCandidates = [System.Collections.Generic.List[object]]::new()
 
         foreach ($Member in $PermanentGAMembers) {
-            $User = $Users | Where-Object { $_.id -eq $Member.principalId }
+            # Get-CippDbRoleMembers returns the principal object id as 'id', not 'principalId'.
+            $User = $UserById.Find($Member.id)
 
             # Only process cloud-only accounts
             if ($User -and $User.onPremisesSyncEnabled -ne $true) {
@@ -165,7 +170,9 @@ function Invoke-CippTestZTNA21835 {
 
             $UserSummary = [System.Collections.Generic.List[object]]::new()
             foreach ($Member in $PermanentGAMembers) {
-                $User = $Users | Where-Object { $_.id -eq $Member.principalId }
+                # 'id', not 'principalId' — see the note above; this lookup silently matched
+                # nothing and every row was skipped by the -not $User guard below.
+                $User = $UserById.Find($Member.id)
                 if (-not $User) { continue }
 
                 $PortalLink = "https://entra.microsoft.com/#view/Microsoft_AAD_UsersAndTenants/UserProfileMenuBlade/~/overview/userId/$($User.id)"
